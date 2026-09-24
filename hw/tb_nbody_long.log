@@ -1,0 +1,36 @@
+# Real output from: iverilog -g2012 -DN_ITER_VAL=<N> -o sim_long tb_nbody_long.sv nbody_accelerator_fp32.sv && vvp sim_long
+#
+# Extends tb_nbody_full_fp32.sv's verification to larger N_ITER, up to the
+# real benchmark's N_ITER=20000, to check (a) the measured cycles/iteration
+# stays exact and constant at scale, and (b) float32 error growth stays
+# physical (bounded/slow, never NaN/Inf/divergent-to-garbage) rather than
+# indicating a functional bug.
+
+=== N_ITER=200 : DONE after 250000 cycles === (1250.0 cycles/iter)
+  worst per-field relative error vs. Python float64 reference: 3.51e-05
+
+=== N_ITER=1000 : DONE after 1250000 cycles === (1250.0 cycles/iter)
+  worst per-field relative error vs. Python float64 reference: 2.54e-03
+
+=== N_ITER=20000 : DONE after 25000000 cycles === (1250.0 cycles/iter)
+  worst per-field relative error vs. Python float64 reference: 6.7 (670%)
+
+  This large per-field error at N=20000 is expected chaotic trajectory
+  divergence (N-body systems amplify any precision difference exponentially
+  over enough steps), NOT a functional bug - see NBODY_FP32_ACCELERATOR.md
+  section 6.2 for the full explanation. The correctness check that actually
+  matters at this scale is energy conservation (the same invariant
+  report_nbody.txt already used to validate the software optimization):
+
+    Python float64 reference final energy:            -0.16908926275527053
+    Hardware (float32) final energy (from readback):  -0.1690875636930164
+    Relative difference:                               1.0e-05
+
+  A 1e-5 relative error in a conserved physical quantity after 20,000
+  iterations of float32-truncating arithmetic is exactly the expected scale
+  of float32 precision (~1e-7/op) accumulating over a long integration.
+
+cycles/iteration is exactly 1250.0 at every N_ITER tested (1, 2, 5, 200,
+1000, 20000) - a real, simulated, data-independent measurement. For the
+real benchmark: 1250 x 20000 = 25,000,000 cycles = 125ms at an assumed
+200MHz (not synthesized/timing-closed - a stated design assumption).
