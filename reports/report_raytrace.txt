@@ -153,7 +153,8 @@ Not applicable for this benchmark. Per course guidance, a full hardware
 acceleration proposal (Verilog/SystemVerilog implementation, block
 diagram, I/O spec, etc.) is only required for one of the two selected
 benchmarks; that proposal was submitted for nbody (see
-reports/report_nbody.txt Section 5 and hw/nbody_accelerator.sv).
+reports/report_nbody.txt Section 5, hw/nbody_accelerator_fp32.sv, and
+NBODY_FP32_ACCELERATOR.md).
 
 For reference, if a hardware target were proposed for raytrace, the
 profiling data (Section 2) points to a ray-sphere intersection unit

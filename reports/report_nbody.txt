@@ -1,0 +1,347 @@
+================================================================================
+Report: nbody
+================================================================================
+
+--------------------------------------------------------------------------------
+1. OVERVIEW
+--------------------------------------------------------------------------------
+Description:
+  The nbody benchmark simulates the gravitational interaction between the Sun
+  and four outer planets (Jupiter, Saturn, Uranus, Neptune), starting from
+  real astronomical position/velocity/mass data. It performs a classic
+  direct pairwise-force N-body integration: for every pair of bodies (10
+  unique pairs among 5 bodies), it computes the Newtonian gravitational
+  force and updates both bodies' velocities, then advances all positions
+  from their velocities (a leapfrog-style Euler integrator). The timed hot
+  path (bench_nbody -> advance(dt=0.01, iterations=20000)) runs this
+  10-pair update loop 20,000 times per benchmark iteration.
+
+Libraries used:
+  Pure Python standard library only (math for sqrt). No third-party
+  dependencies beyond the pyperf measurement harness itself
+  (pyproject.toml lists only "pyperf").
+
+Data structures / algorithms employed:
+  - BODIES: dict mapping body name -> (position [x,y,z] list, velocity
+    [x,y,z] list, mass float). Positions/velocities are plain mutable
+    Python lists, updated in place.
+  - PAIRS: all 5-choose-2 = 10 unique body pairs, precomputed once at
+    import time via a hand-rolled combinations() (avoids depending on
+    itertools for older-Python compatibility).
+  - Algorithm: direct O(N^2) pairwise Newtonian gravity (fine since N=5,
+    no tree/approximation needed), classic leapfrog integration split
+    into a velocity-update pass (advance's pair loop) followed by a
+    position-update pass.
+
+--------------------------------------------------------------------------------
+2. INITIAL ANALYSIS
+--------------------------------------------------------------------------------
+Environment: course VM (naranja14, QEMU/KVM guest), Ubuntu 22.04,
+Linux 5.15.0-1080-kvm, Python 3.10.12, single vCPU.
+
+Baseline (python3 -m pyperformance run --bench nbody):
+  231 ms +- 2 ms
+
+perf record: hardware `cycles`-based sampling produced ZERO samples in
+this KVM guest (a known issue: counting mode works, but the PMI interrupt
+that sampling needs is often not forwarded correctly to KVM guests).
+Confirmed with `perf stat -e cycles,instructions` (worked fine for
+counting) vs. `perf record` (0 samples). Fixed by switching to a
+software-timer event instead of a hardware one:
+  perf record -e cpu-clock -F 999 -g -o perf.data -- \
+    python3-dbg -m pyperformance run --bench nbody
+
+Flame graph: reports/nbody_artifacts/nbody_flamegraph.svg
+Full report: reports/nbody_artifacts/perf_report.txt
+
+Profiling breakdown (perf report --stdio, cpu-clock event, 49K samples):
+  - ~38% raw CPython bytecode interpreter dispatch (_PyEval_EvalFrameDefault).
+    Inner call-stack frames under this show as unresolved hex addresses -
+    this is a known perf/CPython interaction: ceval.c's main loop uses
+    computed gotos, which breaks frame-pointer-based stack unwinding.
+  - Named C-level hotspots (the actionable part):
+      binary_op1 / binary_iop1        ~5.8%  generic arithmetic dispatch
+      float_mul / float_add / float_sub ~6.5% actual floating-point math
+      list_ass_item / list_ass_subscript ~3.7% indexed list writes
+        (v1[0] -= ..., r[0] += ...)
+      _Py_CheckSlotResult             ~3.7%  operator-protocol slot checks
+      PyFloat_FromDouble / float_dealloc ~6.3% float object alloc/dealloc
+      _PyNumber_Index / PyNumber_AsSsize_t ~4%  int-subscript index
+        conversion overhead (from the literal-int list indexing)
+
+Identified hotspots / conclusion:
+  The benchmark is not slow because the math is hard (N=5, O(N^2) is
+  trivial). It is slow because of interpreter-level overhead PER
+  operation: every float is a heap-allocated object (PyFloat_FromDouble/
+  float_dealloc churn), every arithmetic op goes through generic
+  type-dispatch (binary_op1, _Py_CheckSlotResult), and critically, the
+  ~75 indexed list reads/writes per timestep (v1[0] -=, r[0] +=, done
+  20,000 times = ~1.5M indexed operations total) show up directly as
+  list_ass_item / list_ass_subscript / PyNumber_AsSsize_t - this became
+  the target for optimization.
+
+--------------------------------------------------------------------------------
+3. OPTIMIZATIONS
+--------------------------------------------------------------------------------
+Three approaches were tried, in order, and measured - not just assumed:
+
+Attempt 1 - sqrt() instead of pow():
+  Replaced `(dx*dx+dy*dy+dz*dz) ** (-1.5)` with `1.0/(d2*sqrt(d2))`, on
+  the general assumption that CPython's non-integer float ** float is
+  slower than math.sqrt(). Measured locally: NO improvement (119ms ->
+  121ms). The perf profile never actually showed float_pow as a hot
+  function, so this guess wasn't grounded in the data. Kept the sqrt form
+  in the final version (it isn't slower), but it was not the real fix.
+
+Attempt 2 - numpy vectorization:
+  Batched all 10 pairwise interactions per timestep into numpy array
+  operations (broadcasting a 5x5x3 difference tensor, einsum for the
+  pairwise force sum). Measured locally: only ~4% faster (0.185s ->
+  0.177s for the raw advance() loop in isolation). With only 5 bodies (10
+  pairs), numpy's per-call dispatch overhead (several numpy calls per
+  timestep x 20,000 timesteps) cancels out most of the vectorization
+  benefit - a textbook case of vectorization overhead dominating at very
+  small N.
+
+Attempt 3 (final, adopted) - loop unrolling / local-variable hoisting:
+  Since this benchmark's 5 bodies are a FIXED, hardcoded dataset (not a
+  variable N), the 10-pair loop in advance() was fully unrolled into 10
+  straight-line blocks operating on plain local variables (fast
+  LOAD_FAST/STORE_FAST bytecodes) instead of list subscripts. The
+  position/velocity lists are read into locals once at the start of
+  advance() and written back once at the end, instead of being read/
+  written on every one of the 20,000 iterations. This directly targets
+  the list_ass_item/list_ass_subscript/PyNumber_AsSsize_t costs
+  identified in profiling. See src/nbody_optimized.py.
+
+  Trade-off: this trades generality (the unrolled advance() only works
+  for exactly these 5 named bodies) for speed - acceptable here because
+  the benchmark itself always models this exact fixed solar-system
+  dataset; it is not parameterized by N.
+
+Correctness check: report_energy() (potential + kinetic energy, a
+standard N-body conservation check) was compared before/after for both
+the original and optimized implementations:
+  ORIGINAL   before: -0.1690751638285245  after: -0.16908926275527172
+  OPTIMIZED  before: -0.1690751638285245  after: -0.16908926275526812
+Identical starting energy; final energy matches to ~12 significant
+digits (the tiny residual difference is expected floating-point
+summation-order noise from reordering the arithmetic, not a bug).
+
+--------------------------------------------------------------------------------
+4. PERFORMANCE COMPARISON
+--------------------------------------------------------------------------------
+First measurement attempt was flagged unstable by pyperf (20-31% std
+dev) due to I/O wait from the shared course VM host (top showed 87.5%
+"wa"; a background `unattended-upgrades` process was found running).
+Stopped it (`sudo systemctl stop unattended-upgrades`), confirmed I/O
+wait dropped to ~0 via vmstat, and re-measured:
+
+  Baseline:  231 ms +- 2 ms
+  Optimized: 155 ms +- 3 ms
+  Improvement: (231 - 155) / 231 = 32.9% faster
+
+Statistically clean (small, comparable std dev on both runs; not flagged
+unstable). Well above the assignment's 7% threshold.
+
+Raw data: reports/baseline_nbody.json, reports/nbody_optimized.json
+Comparison command: python3 -m pyperf compare_to baseline_nbody.json nbody_optimized.json
+
+--------------------------------------------------------------------------------
+5. HARDWARE ACCELERATION PROPOSAL
+--------------------------------------------------------------------------------
+Full architecture, register map, both RTL bugs found and fixed, and the
+complete verification methodology are written up in
+NBODY_FP32_ACCELERATOR.md. This section summarizes it.
+
+Target component: the entire advance() inner loop (10-pair gravity update +
+position update, repeated N=20,000 times). Profiling (Section 2) showed the
+real cost is per-operation CPU/interpreter overhead repeated ~1.5M times,
+not any single expensive computation - software optimization (Section 3)
+already squeezed what it could out of that overhead (32.9% via unrolling);
+a hardware unit that still pays a software dispatch cost per operation would
+not remove the remaining overhead. Instead, the accelerator runs the ENTIRE
+loop autonomously once triggered, so the host only pays two MMIO round-trips
+(write state + trigger, then read result) instead of ~1.5M individual
+operations.
+
+Hardware description: hw/nbody_accelerator_fp32.sv (SystemVerilog),
+verified with hw/tb_fp32_units.sv (arithmetic unit tests) and
+hw/tb_nbody_full_fp32.sv / hw/tb_nbody_long.sv (full-system tests, up to
+the real N_ITER=20000). Contains:
+  - fp_mul, fp_add: combinational IEEE-754 float32 multiply/add-subtract
+  - fp_sqrt: iterative square-root unit, 25-cycle latency
+  - fp_div: iterative restoring divider, 49-cycle latency
+  - body_regfile: 35 x 32-bit on-chip register file (5 bodies x
+    pos.xyz/vel.xyz/mass), dual-ported (host MMIO + core)
+  - pair_rom: the 10 fixed (body_i, body_j) index pairs (matches Python's
+    combinations(SYSTEM), same order: sun-jupiter, sun-saturn, ...,
+    uranus-neptune)
+  - nbody_core: 21-state control FSM sequencing all 10 pairs x N
+    iterations through the shared fp_mul/fp_add/fp_sqrt/fp_div datapath,
+    then the 5-body position-update pass, per iteration
+  - nbody_accelerator: top-level module wrapping the above behind a
+    simple memory-mapped register interface
+Numeric format: IEEE-754 float32. An earlier Q16.16 fixed-point version of
+this design was found (by design review) to be unable to represent this
+workload at all - 8 of the 10 pairwise force terms underflow to exactly
+zero at Q16.16's ~1.5e-5 resolution. Float32 was chosen over float64
+because it was the version actually debugged to a verified-correct state
+(see the "What Was Actually Broken" section of NBODY_FP32_ACCELERATOR.md);
+it also roughly halves fp_sqrt/fp_div's iterative latency versus float64.
+This is a workload-specialized accelerator, not a general-purpose FPU:
+fp_sqrt/fp_div assume non-negative operands, which always holds for d^2
+and d^2*sqrt(d^2) in this physics computation; no NaN/Inf/denormal
+handling.
+
+Inputs and outputs:
+  Interface: memory-mapped register bus (documented here as raw
+  synchronous read/write; drop-in behind a thin AXI-Lite or Avalon-MM
+  wrapper for SoC integration).
+  Register map (see hw/nbody_block_diagram.svg):
+    0x00 CONTROL   [0]=START (write 1 to trigger a run)
+    0x04 STATUS    [0]=BUSY  [1]=DONE (sticky, cleared on read)
+    0x08 DT        float32 timestep (default 0.01 -> 0x3C23D70A)
+    0x0C N_ITER    32-bit iteration count (default 20000)
+    0x40-0xC8 BODY_STATE[0..34]  35 x 32-bit words, layout:
+      body*7 + {0,1,2 = pos.xyz | 3,4,5 = vel.xyz | 6 = mass}
+      body index: 0=sun 1=jupiter 2=saturn 3=uranus 4=neptune
+  All data words are 32 bits. irq: single-bit interrupt line, pulses
+  high for one cycle when a run completes (STATUS.DONE also available
+  via polling).
+  Target operating frequency: 200 MHz (a conservative target for an
+  iterative floating-point datapath of this complexity on a mid-range
+  FPGA or a small-node ASIC standard-cell flow; not synthesized or
+  timing-closed - stated as a design assumption).
+
+Hardware architecture: see hw/nbody_block_diagram.svg. Host writes the
+5 bodies' initial state + DT + N_ITER via MMIO, then writes
+CONTROL.START. nbody_core's FSM then, for N_ITER iterations: walks all
+10 entries of pair_rom, and for each pair reads both bodies' state from
+body_regfile, computes dx/dy/dz (fp_add), dx^2/dy^2/dz^2 (fp_mul),
+d^2 (fp_add), sqrt(d^2) (fp_sqrt), denom = d^2*sqrt(d^2) (fp_mul),
+mag = dt/denom (fp_div), mass-scaled velocity deltas (fp_mul + fp_add),
+and writes the updated velocities back to body_regfile; after all 10
+pairs, it runs the 5-body position-update pass (pos += dt*vel, fp_mul +
+fp_add). When N_ITER iterations complete, it asserts DONE/irq and
+returns to idle. The host then reads the final body state back via MMIO.
+
+HW/SW interface: driver flow (Python side) is:
+  1. Write BODY_STATE[0..34] with the 5 bodies' initial position,
+     velocity (already pre-scaled by DAYS_PER_YEAR, matching the
+     Python BODIES table), and mass.
+  2. Write DT and N_ITER.
+  3. Write CONTROL.START = 1.
+  4. Either poll STATUS.BUSY until it clears, or wait for the irq line.
+  5. Read BODY_STATE[0..34] back to get the final positions/velocities,
+     convert from float32 back to Python float, and hand them to
+     report_energy() (which stays in Python/software - it runs only
+     twice per benchmark call, not 20,000 times, so it is not a
+     profitable acceleration target).
+  No DMA is needed: total state transferred is 140 bytes each way, well
+  suited to simple register-mapped I/O rather than a DMA engine.
+
+Verification: unlike a design that is only read and reasoned about, this
+one was actually simulated (Icarus Verilog). Arithmetic units in
+isolation: 14/17 exact bit-for-bit matches against Python-computed
+IEEE-754 ground truth, 3 expected 1-ULP truncation differences (this
+hardware truncates instead of round-to-nearest). Full system, driven
+with the benchmark's real solar-system data over simulated MMIO: every
+field of every body matches a Python float64 reference to float32-epsilon
+scale (~1e-7) at small N_ITER, and - run all the way out to the real
+N_ITER=20000 - the conserved total energy matches Python's float64
+reference to 1.0e-05 relative error (position-by-position comparison
+stops being meaningful well before N=20000, since an N-body system is
+chaotic and any precision difference diverges exponentially over enough
+steps; energy conservation is the correctness invariant that actually
+applies at that scale). Full detail in NBODY_FP32_ACCELERATOR.md.
+
+Two real RTL bugs were found this way and fixed (both documented in
+detail, with root cause, in NBODY_FP32_ACCELERATOR.md): an MMIO address
+range off by the size of the region rather than its last address (which
+silently dropped every access to uranus and neptune), and a write-enable
+signal registered one cycle behind the combinational address/data it was
+meant to gate (which silently dropped velocity-x write-backs and leaked
+a stray zero-write into the next body's velocity-x register). Neither
+bug was visible from arithmetic-unit-level testing alone - both required
+exercising the full FSM with real data to surface.
+
+Acceleration justification and expected speedup: the accelerator removes
+all per-operation CPython interpreter/dispatch/allocation overhead by
+running the whole loop in fixed hardware, triggered once. Cycle count is
+a real, simulated measurement (not a hand-derived estimate): exactly
+1250 cycles/iteration, confirmed identical at every N_ITER tested (1, 2,
+5, 200, 1000, and the real 20000):
+  1250 cycles/iteration x 20,000 iterations = 25,000,000 cycles
+  At 200 MHz: 25,000,000 / 200e6 = 0.125 s = 125 ms
+Compared to the measured software numbers (Section 4): this is an
+estimated ~19.4% further improvement over the optimized software
+(155ms), or ~45.9% (~1.85x) over the original unoptimized baseline
+(231ms). This rests on the 200MHz clock target holding after real
+synthesis (not performed, as the assignment allows) - the 1250-
+cycles/iteration figure and the correctness of the datapath producing it
+are not assumptions, though; both come from actually running the fixed
+RTL.
+
+Block diagram: hw/nbody_block_diagram.svg
+
+Performance/area/power trade-offs:
+  - As designed (1 shared datapath, serial across 10 pairs): smallest
+    area/power footprint (~1 fp_mul + 1 fp_add + 1 fp_sqrt + 1 fp_div +
+    small control logic + 140-byte regfile), ~125ms measured-cycle-count
+    runtime, ~19% over optimized software.
+  - Most of that 125ms is spent waiting on the two iterative units:
+    fp_sqrt (25 cycles) and fp_div (49 cycles) dominate each pair's ~100+
+    cycle cost. Parallelizing across pairs (N parallel Pairwise Gravity
+    Units, each with its own fp_sqrt/fp_div) would cut that dominant cost
+    roughly proportionally - with full 10-way parallelism, per-iteration
+    latency drops to roughly one pair's latency instead of ten pairs'
+    worth, at roughly 10x the fp_sqrt/fp_div area and power (by far the
+    most expensive units here, being multi-cycle iterative datapaths).
+    Velocity-update writes to shared bodies across pairs would need
+    read/write hazard resolution (serialized writeback or an
+    accumulate-then-merge scheme) that a real design would need to work
+    out in more detail.
+  - This workload's tiny, fixed problem size (5 bodies, 10 pairs) is
+    exactly what makes that hardware parallelism affordable, in contrast
+    to numpy's software vectorization attempt (Section 3), which did not
+    pay off at this same small scale because its overhead is a fixed
+    per-call software cost rather than area that scales linearly with
+    hardware units.
+  - The fp_sqrt/fp_div units' iterative implementation was chosen
+    deliberately over a faster combinational or Newton-Raphson-with-LUT-
+    seed design specifically to keep area/power low, since this is a
+    small, embedded-scale accelerator, not a high-throughput one.
+
+--------------------------------------------------------------------------------
+6. CONCLUSION
+--------------------------------------------------------------------------------
+Profiling (perf, cpu-clock sampling) showed nbody's cost is dominated by
+per-operation CPython interpreter/dispatch/object-allocation overhead
+(~1.5M indexed list operations across 20,000 iterations x 10 pairs),
+not by the arithmetic itself. Two optimization approaches grounded in
+general performance folklore (pow->sqrt, numpy vectorization) were
+tried and measured to have negligible or minor effect, precisely
+because they did not address that overhead; the winning optimization
+(loop unrolling into local variables) directly targeted it and got a
+real, verified 32.9% improvement (231ms -> 155ms) on the course Linux
+VM, correctness-checked via energy conservation.
+
+The hardware proposal (Section 5) targets the same root cause from the
+other direction: rather than a unit that speeds up a single arithmetic
+op the CPU still has to dispatch through software, the proposed Pairwise
+Gravity Accelerator runs the whole 20,000-iteration loop autonomously in
+hardware between two MMIO round-trips. Unlike a design that is only
+described on paper, this one was actually built, debugged, and verified
+in simulation: two real RTL bugs were found and fixed by testing the
+full FSM against real data (not just the arithmetic units in isolation),
+and the resulting design's cycle count - a measured 1250 cycles/iteration,
+confirmed all the way out to the real N_ITER=20000 - gives an honest,
+simulation-backed estimate of ~19.4% further speedup over the optimized
+software baseline (~45.9% over the original), for a single-shared-
+datapath design, with a clear, quantified path to a much larger win
+(up to ~10x on the dominant fp_sqrt/fp_div cost) via parallelizing
+across the benchmark's 10 fixed pairs - directly enabled by this
+workload's small, fixed problem size, which is the same property that
+made software vectorization (numpy) NOT pay off but makes hardware
+parallelism straightforwardly affordable.
