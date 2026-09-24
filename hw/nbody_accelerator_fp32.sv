@@ -20,7 +20,14 @@
 //   0x04  STATUS    bit0=BUSY, bit1=DONE (sticky, clear-on-read)
 //   0x08  DT        float32 timestep (default 0.01 = 0x3C23D70A)
 //   0x0C  N_ITER    iteration count
-//   0x40-0x8C  BODY_STATE[0..34]  35 x float32 words (140 bytes)
+//   0x40-0xC8  BODY_STATE[0..34]  35 x float32 words (140 bytes)
+//   BUG FIX: end address was originally written as 0x8C (that's the SIZE of
+//   the region, 35*4=140=0x8C, not its last address). Starting at 0x40, the
+//   last word (index 34) is actually at 0x40+34*4=0xC8. The old 0x8C bound
+//   silently dropped every MMIO write/read at index >= 20 (bodies 3 and 4,
+//   i.e. uranus and neptune, never loaded or read back correctly) - the
+//   exact same bug hardware.md flagged for the original Q16.16 design,
+//   reintroduced here when this file was derived from the float64 version.
 // ============================================================================
 
 
@@ -447,9 +454,26 @@ module nbody_core (
     fp_div u_div (.clk(clk), .rst_n(rst_n), .start(div_start),
                   .a(dt), .b(denom), .result(div_result), .done(div_done));
 
+    // BUG FIX: rf_we used to be driven from the sequential (always_ff) block
+    // as `rf_we <= 1'b1` inside each write-intending state, while rf_addr/
+    // rf_wdata are combinational (always_comb, valid the SAME cycle as the
+    // state/sub they belong to). Since a registered rf_we only takes effect
+    // one cycle AFTER the case branch that set it, it landed one cycle late
+    // relative to rf_addr/rf_wdata - which by then had already advanced to
+    // the NEXT sub-step. Symptom: found via tb_nbody_full_fp32.sv - every
+    // "i"-body's vx write in S_WB_I (sub=0) was silently dropped (rf_we was
+    // still 0, carried over from S_VELUPD, when addr/data were already
+    // valid for sub=0), and S_POSUPD's last primed rf_we (from pos_step=9)
+    // leaked into the FIRST cycle of the NEXT body's pos_step=0 (a READ
+    // step), spuriously writing 0 to that body's vx register. Net effect:
+    // every non-sun body's vx ended up hard-zeroed after position update.
+    // Fix: drive rf_we combinationally, in the same always_comb block and
+    // on the same cycle as rf_addr/rf_wdata, so write-enable and the
+    // address/data it applies to are never one cycle apart.
     always_comb begin
         rf_addr  = 6'b0;
         rf_wdata = 32'b0;
+        rf_we    = 1'b0;
         fadd_a   = 32'b0;
         fadd_b   = 32'b0;
 
@@ -480,10 +504,12 @@ module nbody_core (
             S_WB_I: begin
                 rf_addr  = 6'(bi) * 6'd7 + 6'd3 + {3'b0, sub};
                 rf_wdata = (sub==3'd0) ? vxi : (sub==3'd1) ? vyi : vzi;
+                rf_we    = 1'b1;
             end
             S_WB_J: begin
                 rf_addr  = 6'(bj) * 6'd7 + 6'd3 + {3'b0, sub};
                 rf_wdata = (sub==3'd0) ? vxj : (sub==3'd1) ? vyj : vzj;
+                rf_we    = 1'b1;
             end
 
             S_POSUPD: case (pos_step)
@@ -494,9 +520,9 @@ module nbody_core (
                 4'd4: begin rf_addr=6'(body_idx)*6'd7+6'd1; fadd_a=px;  fadd_b=dtVx; end
                 4'd5: begin rf_addr=6'(body_idx)*6'd7+6'd2; fadd_a=py;  fadd_b=dtVy; end
                 4'd6: begin                                  fadd_a=pz;  fadd_b=dtVz; end
-                4'd7: begin rf_addr=6'(body_idx)*6'd7+6'd0; rf_wdata=x_new; end
-                4'd8: begin rf_addr=6'(body_idx)*6'd7+6'd1; rf_wdata=y_new; end
-                4'd9: begin rf_addr=6'(body_idx)*6'd7+6'd2; rf_wdata=z_new; end
+                4'd7: begin rf_addr=6'(body_idx)*6'd7+6'd0; rf_wdata=x_new; rf_we=1'b1; end
+                4'd8: begin rf_addr=6'(body_idx)*6'd7+6'd1; rf_wdata=y_new; rf_we=1'b1; end
+                4'd9: begin rf_addr=6'(body_idx)*6'd7+6'd2; rf_wdata=z_new; rf_we=1'b1; end
                 default: ;
             endcase
 
@@ -510,9 +536,9 @@ module nbody_core (
             pair_idx   <= '0; iter_cnt <= '0;
             body_idx   <= '0; bi <= '0; bj <= '0;
             sub        <= '0; pos_step <= '0;
-            rf_we      <= '0; sqrt_start <= '0; div_start <= '0;
+            sqrt_start <= '0; div_start <= '0;
         end else begin
-            done <= '0; rf_we <= '0; sqrt_start <= '0; div_start <= '0;
+            done <= '0; sqrt_start <= '0; div_start <= '0;
 
             case (state)
                 S_IDLE: begin
@@ -592,12 +618,10 @@ module nbody_core (
                 end
 
                 S_WB_I: begin
-                    rf_we <= 1'b1;
                     if (sub==3'd2) begin sub<='0; state<=S_WB_J; end
                     else           sub<=sub+3'd1;
                 end
                 S_WB_J: begin
-                    rf_we <= 1'b1;
                     if (sub==3'd2) begin sub<='0; state<=S_NEXTPAIR; end
                     else           sub<=sub+3'd1;
                 end
@@ -619,10 +643,9 @@ module nbody_core (
                         4'd4: begin py<=rf_rdata; pos_step<=4'd5; end
                         4'd5: begin pz<=rf_rdata; x_new<=fadd_s_reg; pos_step<=4'd6; end
                         4'd6: begin              y_new<=fadd_s_reg; pos_step<=4'd7; end
-                        4'd7: begin z_new<=fadd_s_reg; rf_we<=1'b1; pos_step<=4'd8; end
-                        4'd8: begin rf_we<=1'b1; pos_step<=4'd9; end
+                        4'd7: begin z_new<=fadd_s_reg; pos_step<=4'd8; end
+                        4'd8: begin pos_step<=4'd9; end
                         4'd9: begin
-                            rf_we <= 1'b1;
                             pos_step <= '0;
                             if (body_idx==3'd4) begin
                                 body_idx <= '0;
@@ -648,7 +671,7 @@ endmodule
 // ----------------------------------------------------------------------------
 // nbody_accelerator: top-level MMIO wrapper. 32-bit data/addr bus.
 // Register map: 0x00=CONTROL, 0x04=STATUS, 0x08=DT, 0x0C=N_ITER,
-//               0x40-0x8C=BODY_STATE[0..34] (35 x 4 bytes).
+//               0x40-0xC8=BODY_STATE[0..34] (35 x 4 bytes).
 // ----------------------------------------------------------------------------
 module nbody_accelerator (
     input  logic        clk,
@@ -715,7 +738,7 @@ module nbody_accelerator (
                     8'h08: core_dt     <= mmio_wdata;
                     8'h0C: core_n_iter <= mmio_wdata;
                     default: begin
-                        if (mmio_addr >= 8'h40 && mmio_addr <= 8'h8C) begin
+                        if (mmio_addr >= 8'h40 && mmio_addr <= 8'hC8) begin
                             rf_host_we    <= 1'b1;
                             rf_host_wdata <= mmio_wdata;
                         end
@@ -733,7 +756,7 @@ module nbody_accelerator (
         mmio_rdata   = 32'b0;
         if (mmio_addr == 8'h04)
             mmio_rdata = {30'b0, sticky_done, core_busy};
-        else if (mmio_addr >= 8'h40 && mmio_addr <= 8'h8C)
+        else if (mmio_addr >= 8'h40 && mmio_addr <= 8'hC8)
             mmio_rdata = rf_host_rdata;
     end
 

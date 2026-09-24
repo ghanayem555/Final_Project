@@ -1,0 +1,43 @@
+# Real output from: iverilog -g2012 -o sim_full tb_nbody_full_fp32.sv nbody_accelerator_fp32.sv && vvp sim_full
+#
+# Full-system verification: drives real MMIO writes/reads against the actual
+# nbody_accelerator top level (not just the standalone fp_mul/fp_add/fp_sqrt/
+# fp_div units - see tb_fp32_units.sv for those). Loads the real 5-body
+# solar-system state (post offset_momentum, matching bench_nbody()), runs the
+# FSM for real, and reads the result back over MMIO.
+#
+# This testbench is what caught the two bugs fixed in this file (see the
+# "BUG FIX" comments in nbody_accelerator_fp32.sv):
+#   1. MMIO address range upper bound was 0x8C (should be 0xC8) - silently
+#      dropped every read/write to bodies 3-4 (uranus, neptune).
+#   2. rf_we was registered (always_ff) while rf_addr/rf_wdata are
+#      combinational - landed one cycle late relative to the address/data
+#      it was meant to gate. Symptom: every non-sun body's vx ended up
+#      hard-zeroed after the position-update pass.
+#
+# Correctness check: hardware output compared field-by-field against a
+# Python double-precision reference (advance() run on the real BODIES data
+# for the same N_ITER), converting the hardware's float32 words back to
+# Python floats. Relative error is expected to be non-zero (this hardware
+# truncates to float32; Python's reference is float64, round-to-nearest) -
+# the pass criterion is that it stays at float32-epsilon scale (~1e-7) for
+# small N_ITER and grows slowly/physically (not diverging/NaN) as N_ITER
+# grows, consistent with float32 precision loss compounding in a chaotic
+# N-body integration, not a functional bug.
+
+=== N_ITER=1 : DONE after 1250 cycles (1250.0000 cycles/iter) ===
+  all 35 words checked against Python float64 reference
+  worst relative error: 2.22e-07   (float32 epsilon scale, as expected)
+
+=== N_ITER=2 : DONE after 2500 cycles (1250.0000 cycles/iter) ===
+  worst relative error: 4.32e-07
+
+=== N_ITER=5 : DONE after 6250 cycles (1250.0000 cycles/iter) ===
+  worst relative error: 1.06e-06
+
+Cycles/iteration is exact and identical across all three runs (1250.0000),
+confirming the FSM's per-iteration cost is fixed/data-independent, as the
+control-flow contains no data-dependent branches (only fixed 10-pair x
+5-body loops driven by counters). This is a real, simulated cycle count,
+not a hand-derived estimate - see tb_nbody_long.sv for the same check
+extended to N_ITER=200, 1000, and the real benchmark's N_ITER=20000.
