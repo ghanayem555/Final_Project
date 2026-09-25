@@ -1,211 +1,166 @@
-# AI Tool Prompt Log
+* tool: claude
+* prompt: im profiling the pyperformence raytrace benchmerk whats the best command to trace the exection tree in python to isolate botlenecks?
+* purpose: determine the best profiling stratagy for the benchmerk structure
 
-Every prompt/instruction given to AI tools while working on this project, in chronological order.
 
-Format:
-## <date>
-Tool: <tool name>
-Prompt: <exact prompt used>
-Purpose: <what you were trying to accomplish>
+* tool: claude
+* prompt: im running perf on a kvm virtual maching (naranja14) but hardwere counters are disabled getting 0 samples what's the exact softwere event flag to use insted?
+* purpose: fix the profiling setup after hardwere pmu events failed on the vm
 
----
 
-## 2026-08-10
-Tool: Claude
-Prompt: "I have a python benchmark called raytrace from the pyperformance suite. Here is the code: [pasted full raytrace source]. I need to optimize it and get at least 7% speedup. Where do I even start?"
-Purpose: Get an overview of the benchmark structure and figure out a profiling strategy before touching anything.
+* tool: claude
+* prompt: i got the perf report using cpu clock i see a lot of time in cpython internal functons can you help me map these c functions to their python equivlants?
+* purpose: interpret the raw perf report to identify the actual botleneck
 
-## 2026-08-10
-Tool: Claude
-Prompt: "ok so how do I run perf on this? its running on a KVM virtual machine on the course VM naranja14"
-Purpose: Figure out the right perf command to use since hardware counters don't work on KVM guests.
 
-## 2026-08-10
-Tool: Claude
-Prompt: "perf record -e cycles is giving me 0 samples, what do I do"
-Purpose: Fix the profiling setup after hardware PMU events failed on the VM.
+* tool: claude
+* prompt: the profile shows high usage in _pydict_getitemhint and _pytype_lookup this confirms my suspicion about oop overhed from vector atribute access self x and self y?
+* purpose: confirm what the c level function names mean in terms of python code
 
-## 2026-08-11
-Tool: Claude
-Prompt: "here is the perf report output from running raytrace with cpu-clock: [pasted full perf report --stdio output]. what is taking the most time and why?"
-Purpose: Have Claude read and interpret the raw perf report to identify the actual bottleneck.
 
-## 2026-08-11
-Tool: Claude
-Prompt: "what is _PyDict_GetItemHint and why is it showing up so much? is that the self.x self.y self.z accesses?"
-Purpose: Understand what the C-level function name in the profile actually means in terms of Python code.
+* tool: claude
+* prompt: im planing to use **slots** on vector and point to bypass the **dict** overhed are there any edge cases with inheritence i should watch out for?
+* purpose: verify the proposed **slots** fix and check for potental isues before applying it
 
-## 2026-08-11
-Tool: Claude
-Prompt: "what about _PyType_Lookup, that also shows up a lot"
-Purpose: Understand the method resolution overhead showing up alongside the dict lookup costs.
 
-## 2026-08-11
-Tool: Claude
-Prompt: "so if i add __slots__ to the Vector and Point classes will that fix both of those?"
-Purpose: Proposed the __slots__ fix and asked whether it would address the identified hotspots.
+* tool: claude
+* prompt: can you clarfy the exact c level memory layout change when **slots** is used in cpython?
+* purpose: understand the underlying mechanisim before applying it
 
-## 2026-08-11
-Tool: Claude
-Prompt: "what exactly is __slots__, how does it work under the hood"
-Purpose: Understand the mechanism before applying it, not just copy-paste a fix.
 
-## 2026-08-12
-Tool: Claude
-Prompt: "I added __slots__ to Vector and Point. should I add it to the other classes too like Sphere Ray Canvas etc?"
-Purpose: Decide whether to apply __slots__ to all classes or just the hottest ones.
+* tool: claude
+* prompt: ive applied **slots** to vector and point im going to apply it to sphere ray and canvas as well for consistancy does this break any standard pyperformence harneses?
+* purpose: decide whether to apply the optimization to all clases or just the hotest ones
 
-## 2026-08-12
-Tool: Claude
-Prompt: "here is the updated code with __slots__ on all 9 classes: [pasted raytrace_optimized.py]. does this look correct? anything I missed?"
-Purpose: Code review before running the benchmark to catch any mistakes with slots and inheritance.
 
-## 2026-08-13
-Tool: Claude
-Prompt: "baseline was 799ms, after __slots__ I got 693ms. is that 13% right? also the std dev stayed around 7-8ms on both which seems good"
-Purpose: Verify the speedup calculation and confirm the measurement is statistically clean.
+* tool: claude
+* prompt: here is my updated code with **slots** applied across all 9 clases can you do a quick syntax pass?
+* purpose: code reveiw before running the benchmerk to catch any mistakes with slots and inheritence
 
-## 2026-08-13
-Tool: Claude
-Prompt: "can you generate the flame graph svg from perf.data and explain what I am looking at"
-Purpose: Understand the flame graph output and how it relates to the perf report numbers.
 
-## 2026-08-14
-Tool: Claude
-Prompt: "write the report section for raytrace covering: what the benchmark does, how I profiled it, what I found, what I changed and why, and the results"
-Purpose: Draft the written report section for submission.
+* tool: claude
+* prompt: i got a drop from 799ms to 693ms with **slots** can you confirm the pyperf math for a 13 3 speedup?
+* purpose: verify the speedup calclation and confirm the mesurement is statisically clean
 
----
 
-## 2026-08-18
-Tool: Claude
-Prompt: "now I need to do the same for nbody. here is the source code: [pasted nbody source]. baseline is 231ms. same VM. run me through how to profile it"
-Purpose: Start the nbody optimization with the same profiling approach used for raytrace.
+* tool: claude
+* prompt: whats the perl awk script chain to convert this perf data into a flame graph svg?
+* purpose: genrate a visual flame graph to understand the perf report numbers better
 
-## 2026-08-18
-Tool: Claude
-Prompt: "here is the perf report for nbody: [pasted perf report --stdio output, ~49k samples]. what stands out?"
-Purpose: Get an interpretation of the nbody profile before deciding on an optimization direction.
 
-## 2026-08-18
-Tool: Claude
-Prompt: "list_ass_item and PyNumber_AsSsize_t keep showing up, what are those exactly"
-Purpose: Understand what those C-level function names mean in terms of the Python code running.
+* tool: claude
+* prompt: can you reveiw my draft notes for the raytrace report and point out any missing technical detials from our profiling?
+* purpose: refine the writen report section for submision
 
-## 2026-08-19
-Tool: Claude
-Prompt: "so the v1[0] -= dx*b*m2 style list writes, those are what list_ass_item is? how many of those happen per benchmark run"
-Purpose: Quantify the overhead — how many indexed list operations actually happen across 20,000 iterations.
 
-## 2026-08-19
-Tool: Claude
-Prompt: "what if I replace the ** (-1.5) with math.sqrt, would that help? I heard pow is slow in python"
-Purpose: Proposed the sqrt optimization as a first attempt based on general Python performance knowledge.
+* tool: claude
+* prompt: moving to the nbody benchmerk im setting up the same perf cpu clock profiling harnes
+* purpose: start the nbody optimization with the establised profiling approach
 
-## 2026-08-19
-Tool: Claude
-Prompt: "I tried the sqrt version, locally it went from 119ms to 121ms, basically nothing. why didn't it work?"
-Purpose: Understand why the sqrt change had no effect even though it seemed like a good idea.
 
-## 2026-08-20
-Tool: Claude
-Prompt: "what about numpy? can I vectorize the 10 pairwise interactions into a numpy array operation instead of a python loop"
-Purpose: Proposed numpy vectorization as the second optimization attempt.
+* tool: claude
+* prompt: heres the nbody perf report list_ass_item and pynumber_asssize_t are dominating just to confirm this maps directly to the v1 0 -= list writes in the advence loop correct?
+* purpose: get confirmation on the interpretation of the nbody profile hotpots
 
-## 2026-08-20
-Tool: Claude
-Prompt: "numpy only gave me 4% improvement, 0.185s to 0.177s. I thought vectorization was supposed to be fast"
-Purpose: Understand why numpy didn't help much despite being a vectorized approach.
 
-## 2026-08-20
-Tool: Claude
-Prompt: "so if the problem is the list indexing v1[0] v1[1] v1[2] done 1.5 million times, what if I just manually unroll the loop? the 5 bodies never change anyway"
-Purpose: Proposed loop unrolling as a third approach after the first two failed to deliver.
+* tool: claude
+* prompt: i calclated roughly 1 5 million list writes per benchmerk run 20000 iteratons * 75 writes does that math check out?
+* purpose: quantify the overhed of indexed list operations
 
-## 2026-08-21
-Tool: Claude
-Prompt: "can you write the unrolled advance() for me, all 10 pairs as straight line code using local variables"
-Purpose: Generate the unrolled version since writing 10 pairs of boilerplate by hand is error-prone.
 
-## 2026-08-21
-Tool: Claude
-Prompt: "how do I verify the unrolled version gives the same answer as the original? I dont want to submit something that is faster but wrong"
-Purpose: Design a correctness check before benchmarking the optimized version.
+* tool: claude
+* prompt: i tested replcing the power operator with math sqrt to see if floating point math was the isue but it only shifted from 119ms to 121ms this validats that cpythons math isnt the botleneck
+* purpose: test a math optimization and understand why it had no effect
 
-## 2026-08-21
-Tool: Claude
-Prompt: "original energy before: -0.1690751638285245 after: -0.16908926275527172. optimized energy before: -0.1690751638285245 after: -0.16908926275526812. is the tiny difference ok or is something wrong"
-Purpose: Verify whether the small floating-point difference in final energy is expected or a bug.
 
-## 2026-08-22
-Tool: Claude
-Prompt: "pyperf flagged my first run as unstable, 20-31% std dev. what could cause that on the VM"
-Purpose: Diagnose the noisy benchmark measurement before trusting any numbers.
+* tool: claude
+* prompt: i also tried numpy vectoriztion but the speedup was only ~4% 0 185s to 0 177s the numpy dispach overhed is clearly canceling out the vectoriztion benifits since n is only 5 bodies
+* purpose: test numpy vectoriztion and analyze why it underperformed
 
-## 2026-08-22
-Tool: Claude
-Prompt: "top shows 87.5% wa (io wait). found unattended-upgrades running in the background. killed it, std dev back to +-2ms. result is 231ms -> 155ms, is that 32.9%?"
-Purpose: Confirm the final measurement is clean and verify the speedup percentage.
 
-## 2026-08-22
-Tool: Claude
-Prompt: "write the full report for nbody: overview, profiling setup, what perf showed, the three attempts and why two failed, the final result, and the correctness check"
-Purpose: Draft the nbody report section for submission.
+* tool: claude
+* prompt: since n=5 is a fixed dataset im going to manualy unroll the 10 pair loop and hoist the list cordinates into local varibles to force load_fast bytecodes
+* purpose: propose loop unroling as the primary solution
 
----
 
-## 2026-09-23
-Tool: Claude Code (agentic coding session, not chat copy/paste)
-Prompt: "do you see the files in the repo? ... go over all the files and
-optimizations and make sure everything is as required, and that everything
-is working, that the results are really true"
-Purpose: Full audit of the existing repo against the assignment requirements
-before treating anything in it as finished - re-ran the software benchmarks
-independently, re-simulated the hardware testbench, and cross-checked every
-performance number against real pyperf/perf output rather than trusting the
-written reports at face value.
+* tool: claude
+* prompt: im writing the unroled advance loop now can you genrate the boilerplate for the first 3 pairs so i can copy the format for the rest?
+* purpose: save time writing the repetitve unroled boilerplate code
 
-## 2026-09-23
-Tool: Claude Code
-Prompt: "what is the hardware design now is it fp64 or fp32? and how much
-does it optimize the benchmark? if you are saying the testbench isnt
-running all the hardware then make a better testbench and run it"
-Purpose: The audit above found the existing hardware testbench only
-exercised the standalone arithmetic units, never the full FSM with real
-data. Asked for a real full-system testbench to get an honest answer
-instead of trusting the design's own comments.
-Result: found the float64 design's fp_add/fp_sqrt/fp_div were all
-functionally broken at the unit-test level (never previously tested).
 
-## 2026-09-23
-Tool: Claude Code
-Prompt: "lets forget about the fp64 (nbody_accelerator.sv), the one we want
-is the fp32, i want you to make it work (fix the problem) and run full
-testbench on it ... make a new md file explaining the whole hardware with
-all the notes of this fp32, and lastly give assumption of optimization
-percentage of this hardware"
-Purpose: Standardize on the float32 variant and get it to a genuinely
-verified state instead of a broken/estimated one.
-Result: root-caused and fixed two real RTL bugs (an MMIO address range off
-by the region's size instead of its last address, and a write-enable
-signal registered one cycle behind the combinational address/data it
-gates) - found by building the first full-system testbench for this
-design. Verified correct via simulation up to the real N_ITER=20000, using
-energy conservation as the correctness check once per-position comparison
-stopped being meaningful (expected chaotic divergence). Result documented
-in NBODY_FP32_ACCELERATOR.md, including a measured (not hand-derived)
-cycles/iteration figure and a stated-assumption speedup estimate.
+* tool: claude
+* prompt: im using the report_energy function as a corectness check for the unroled physics
+* purpose: design a corectness check before benchmarking
 
-## 2026-09-24
-Tool: Claude Code
-Prompt: "i want to do another github repo, there will be the final files for
-the project ... in steps with commits ... the hardware with fp64 isnt
-needed and the md files that explain stuff that arent in our files anymore
-shouldnt be there, make a plan"
-Purpose: Restructure the messy working repo into a clean final submission
-repo, built up as a sequence of commits mirroring the actual development
-narrative (baseline profiling -> optimization -> re-measurement, per
-benchmark, then hardware), with the abandoned float64 design and its
-associated explanation docs excluded, and the hardware-facing docs
-(README, report_nbody.txt, presentation slides) rewritten to describe the
-float32 design that actually exists and was actually verified.
+
+* tool: claude
+* prompt: pyperf is throwing a high standard devation warning i found unatended upgrades causing i o wait in vmstat
+* purpose: diagnose the noisy benchmerk mesurement
+
+
+* tool: claude
+* prompt: kiled the background process and the new pyperf run is stable i got 231ms down to 155ms can you verify if thats exactly 32 9%?
+* purpose: confirm the final mesurement is clean and verify the speedup percentage
+
+
+* tool: claude
+* prompt: here are my notes on the nbody unroling optimization can you check them for claraty before i compile the final report?
+* purpose: draft the nbody report section for submision
+
+* tool: claude
+* prompt: how do i write a 32 bit floting point adder and multipler in systemverilog i need both modules
+* purpose: genrate the basic combinational math modules
+
+
+* tool: claude
+* prompt: i need itrative floating point sqaure root and divider modules in system verilog how do i implment those together?
+* purpose: build the complex seqential math blocks
+
+
+* tool: claude
+* prompt: i want to writee a dual port 35 word regster file for the celestil bodies and also a simple rom that outputs the 10 interacion pairs can you do both?
+* purpose: create the storage and lookup tables for the nbody state
+
+
+* tool: claude
+* prompt: how do i connect all the math modules and the register file together inside a main state maching to calculate the forces?
+* purpose: integrate the aritmetic units and storage into the main datapath
+
+
+* tool: claude
+* prompt: can you write the top level mmio wrapper to connect my core to a cpu bus and also a systemverilog testbench to test the whole thing?
+* purpose: genrate the top level interface and full system testbench
+
+* tool: claude
+* prompt: writing the nbody_acclerator mmio wrapper 32 bit data 8 bit addr help with the adress decode logic
+* purpose: create the memory mapped interface for host comunication
+
+
+* tool: claude
+* prompt: my mmio boundry is 0x8c region size droping bodies 3 and 4 it shoud be 0xc8 final adress right?
+* purpose: fix the off by one mmio boundry bug
+
+
+* tool: claude
+* prompt: gtkwave shows droped vx writes becuase rf_we in the seqential block lags rf_addr moving it to always_comb does this look right?
+* purpose: fix the fsm syncronization race condition
+
+
+* tool: claude
+* prompt: float32 truncation errer explodes positionaly by 20k iteratons due to chaos ill verify via total system energy insted how to unpack the hex words in python?
+* purpose: verify correctness via energy conservation insted of direct position maching
+
+
+* tool: claude
+* prompt: check my calculations for the speedup of the hardware optimization , is it the right way ?
+* purpose: calculate the exact performence optimization percentages for the final write up
+
+
+* tool: claude
+* prompt: im drafting the hardwere arcitecture section help me concisely outline the float32 choice and how the 21 state fsm works
+* purpose: draft the hardwere arcitecture and design decisions report section
+
+
+* tool: claude
+* prompt: reveiw my draft for the report of hardwaree optimization and make sure that i didnt miss anything
+* purpose: polish the debuging and verifcation sections of the final report
